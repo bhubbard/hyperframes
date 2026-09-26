@@ -8,9 +8,97 @@ import {
   getTimelineAssetKind,
   insertTimelineAssetIntoSource,
   resolveTimelineAssetCompositionSize,
+  resolveRootLength,
   resolveTimelineAssetSrc,
   setCompositionDurationToContent,
+  writeRootLength,
 } from "./timelineAssetDrop";
+
+describe("resolveRootLength", () => {
+  const ends = (clips: number, animation = 0) => ({ clips, animation });
+  const noMarker = (length: number | null) => ({ length, marker: null });
+
+  it("moves a derived length to the new content end, both ways, and marks it", () => {
+    expect(resolveRootLength(noMarker(5), ends(5), ends(4))).toEqual({ length: 4, marker: 4 });
+    expect(resolveRootLength(noMarker(5), ends(5), ends(7))).toEqual({ length: 7, marker: 7 });
+    expect(resolveRootLength(noMarker(5), ends(5), ends(4, 6))).toEqual({ length: 6, marker: 6 });
+  });
+
+  it("compares at the writer's hundredths", () => {
+    expect(resolveRootLength(noMarker(5), ends(5.004), ends(4)).length).toBe(4);
+    expect(resolveRootLength(noMarker(5), ends(5.01), ends(4)).length).toBe(5);
+    expect(resolveRootLength({ length: 5, marker: 5.004 }, ends(3), ends(4)).length).toBe(4);
+  });
+
+  it("treats a root without a readable length as derived", () => {
+    expect(resolveRootLength(noMarker(null), ends(5), ends(4)).length).toBe(4);
+    expect(resolveRootLength(noMarker(Number.NaN), ends(5), ends(4)).length).toBe(4);
+  });
+
+  it("keeps a hand-set length and writes nothing, even against a later animation", () => {
+    expect(resolveRootLength(noMarker(8), ends(5, 5), ends(4, 5))).toEqual({
+      length: 8,
+      marker: null,
+    });
+    expect(resolveRootLength(noMarker(3), ends(3, 6), ends(3, 6)).marker).toBeNull();
+  });
+
+  it("decides by a matching marker even after the animation end moved", () => {
+    expect(resolveRootLength({ length: 5, marker: 5 }, ends(3, 3), ends(3, 3))).toEqual({
+      length: 3,
+      marker: 3,
+    });
+  });
+
+  it("calls a length edited away from its marker hand-set, even when it equals the content end", () => {
+    expect(resolveRootLength({ length: 8, marker: 5 }, ends(8), ends(7))).toEqual({
+      length: 8,
+      marker: null,
+    });
+  });
+
+  it("falls back to the content end when the marker is unreadable", () => {
+    expect(resolveRootLength({ length: 5, marker: Number.NaN }, ends(5), ends(4)).length).toBe(4);
+  });
+
+  it("grows a hand-set length to a clip newly placed past it, never to an animation", () => {
+    expect(resolveRootLength(noMarker(8), ends(5), ends(9, 12))).toEqual({ length: 9, marker: 8 });
+    expect(resolveRootLength({ length: 8, marker: 9 }, ends(5), ends(9))).toEqual({
+      length: 9,
+      marker: 8,
+    });
+  });
+
+  it("does not grow a hand-set length for a clip that already ran past it", () => {
+    expect(resolveRootLength(noMarker(8), ends(9), ends(9)).marker).toBeNull();
+    expect(resolveRootLength(noMarker(8), ends(9), ends(8.5)).marker).toBeNull();
+    expect(resolveRootLength(noMarker(8), ends(9), ends(8.004)).marker).toBeNull();
+  });
+});
+
+describe("writeRootLength", () => {
+  const root = `<div data-composition-id="c" data-duration="5">x</div>`;
+
+  it("writes the length and the marker beside it", () => {
+    expect(writeRootLength(root, { length: 3.456, marker: 3.456 })).toBe(
+      `<div data-composition-id="c" data-duration="3.46" data-hf-derived-duration="3.46">x</div>`,
+    );
+  });
+
+  it("rewrites an existing marker in place", () => {
+    const marked = `<div data-hf-derived-duration='5' data-composition-id="c" data-duration='5'>x</div>`;
+    expect(writeRootLength(marked, { length: 9, marker: 8 })).toBe(
+      `<div data-hf-derived-duration='8' data-composition-id="c" data-duration='9'>x</div>`,
+    );
+  });
+
+  it("writes nothing for a kept hand-set length, an empty timeline, or a root without a length", () => {
+    expect(writeRootLength(root, { length: 5, marker: null })).toBe(root);
+    expect(writeRootLength(root, { length: 0, marker: 0 })).toBe(root);
+    const bare = `<div data-composition-id="c">x</div>`;
+    expect(writeRootLength(bare, { length: 3, marker: 3 })).toBe(bare);
+  });
+});
 
 describe("setCompositionDurationToContent", () => {
   const src = (dur: number) =>

@@ -36,8 +36,6 @@ describe("patchDocumentRootDuration", () => {
   });
 
   it("picks the composition with no ancestor composition as the root", () => {
-    // Root appears AFTER a nested one in document order — selection must be by
-    // ancestry, not first-match, matching the runtime's own root resolver.
     const doc = parse(`
       <section data-composition-id="root" data-duration="10">
         <div data-composition-id="inner" data-duration="4"></div>
@@ -50,6 +48,16 @@ describe("patchDocumentRootDuration", () => {
     expect(doc.querySelector('[data-composition-id="inner"]')?.getAttribute("data-duration")).toBe(
       "4",
     );
+  });
+
+  it("writes the derived marker with the length, and clears it for a length without one", () => {
+    const doc = parse(`<div data-composition-id="root" data-duration="5"></div>`);
+    const root = doc.querySelector("[data-composition-id]");
+    patchDocumentRootDuration(doc, 3.456, 3.456);
+    expect(root?.getAttribute("data-duration")).toBe("3.46");
+    expect(root?.getAttribute("data-hf-derived-duration")).toBe("3.46");
+    patchDocumentRootDuration(doc, 5);
+    expect(root?.hasAttribute("data-hf-derived-duration")).toBe(false);
   });
 
   it("no-ops on a non-positive or non-finite content end (never collapses to 0)", () => {

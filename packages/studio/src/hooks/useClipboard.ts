@@ -11,8 +11,10 @@ import {
   insertAsSibling,
 } from "../utils/clipboardPayload";
 import { collectHtmlIds } from "../utils/studioHelpers";
-import { insertTimelineAssetIntoSource } from "../utils/timelineAssetDrop";
-import { extendRootDurationInSource } from "../utils/rootDuration";
+import {
+  extendRootDurationInSource,
+  insertTimelineAssetIntoSource,
+} from "../utils/timelineAssetDrop";
 import { saveProjectFilesWithHistory } from "../utils/studioFileHistory";
 import { formatTimelineAttributeNumber } from "../player/components/timelineEditing";
 import { findElementForSelection } from "../components/editor/domEditingElement";
@@ -366,7 +368,11 @@ export function useClipboard({
         // A clip pasted past the current composition end would exist in the
         // file but never appear on the timeline or in playback/export (the
         // root's data-duration is what actually bounds the render).
-        patchedContent = extendRootDurationInSource(pasted.content, pasted.requiredEnd);
+        patchedContent = extendRootDurationInSource(
+          originalContent,
+          pasted.content,
+          pasted.requiredEnd,
+        );
         pastedIds = pasted.ids;
       } else {
         patchedContent = pasteElementHtml(originalContent, payload);
@@ -425,7 +431,11 @@ export function useClipboard({
       const originalContent = await readFileContent(pid, targetPath);
       const liveElements = usePlayerStore.getState().elements;
       const pasted = pasteTimelineClips(originalContent, clips, anchorTime, liveElements);
-      const patchedContent = extendRootDurationInSource(pasted.content, pasted.requiredEnd);
+      const patchedContent = extendRootDurationInSource(
+        originalContent,
+        pasted.content,
+        pasted.requiredEnd,
+      );
       const ids = pasted.ids;
 
       await saveProjectFilesWithHistory({

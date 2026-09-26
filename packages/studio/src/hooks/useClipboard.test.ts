@@ -7,7 +7,7 @@ import {
   resolveFreeTrack,
   type PlacedClip,
 } from "./useClipboard";
-import { extendRootDurationInSource } from "../utils/rootDuration";
+import { extendRootDurationInSource, syncRootLength } from "../utils/timelineAssetDrop";
 import type { TimelineClipboardClip } from "../utils/clipboardPayload";
 import type { TimelineElement } from "../player";
 
@@ -265,16 +265,38 @@ describe("pasteTimelineClips", () => {
 });
 
 describe("pasteTimelineClips + extendRootDurationInSource", () => {
+  const paste = (source: string, start: number, duration: number) => {
+    const pasted = pasteTimelineClips(source, [clip("sfx-23", 0, duration, 132)], start, []);
+    return extendRootDurationInSource(source, pasted.content, pasted.requiredEnd);
+  };
+  // What the delete path does: remove the clip, then decide the length once.
+  const deletePasted = (source: string) =>
+    syncRootLength(source, source.replace(/<audio[^>]*id="sfx-23"[^>]*><\/audio>/, ""), 0);
+  const film = (root: string) =>
+    `<div data-composition-id="main" ${root}><div id="a" data-start="0" data-duration="5"></div></div>`;
+
   it("grows the root composition's duration when a paste lands past its current end", () => {
     const pasted = pasteTimelineClips(ROOT, [clip("sfx-23", 21.61, 0.57, 132)], 40, []);
-    const extended = extendRootDurationInSource(pasted.content, pasted.requiredEnd);
+    const extended = extendRootDurationInSource(ROOT, pasted.content, pasted.requiredEnd);
     expect(extended).toContain('data-duration="40.57"');
   });
 
   it("leaves the root composition's duration unchanged when the paste fits inside it", () => {
     const pasted = pasteTimelineClips(ROOT, [clip("sfx-23", 1, 0.5, 132)], 2, []);
-    const extended = extendRootDurationInSource(pasted.content, pasted.requiredEnd);
+    const extended = extendRootDurationInSource(ROOT, pasted.content, pasted.requiredEnd);
     expect(extended).toContain('data-duration="10"');
+  });
+
+  it("keeps a derived length derived, so deleting the paste shrinks it back", () => {
+    const pasted = paste(film(`data-duration="5" data-hf-derived-duration="5"`), 5, 4);
+    expect(pasted).toContain(`data-duration="9" data-hf-derived-duration="9"`);
+    expect(deletePasted(pasted)).toContain(`data-duration="5" data-hf-derived-duration="5"`);
+  });
+
+  it("keeps a hand-set length hand-set, so deleting the paste never cuts below it", () => {
+    const pasted = paste(film(`data-duration="8"`), 7, 2);
+    expect(pasted).toContain(`data-duration="9" data-hf-derived-duration="8"`);
+    expect(deletePasted(pasted)).toContain(`data-duration="9" data-hf-derived-duration="8"`);
   });
 });
 

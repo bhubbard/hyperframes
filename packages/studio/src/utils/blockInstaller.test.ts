@@ -68,4 +68,44 @@ describe("addBlockToProject", () => {
     expect(result?.hostKey).toBe("compositions/scene.html#camcorder-hud");
     expect(source).toContain('id="camcorder-hud"');
   });
+
+  it("keeps a derived length's marker in step when the block grows it", async () => {
+    const targetPath = "index.html";
+    const files = new Map([
+      [
+        targetPath,
+        `<main data-composition-id="scene" data-duration="10" data-hf-derived-duration="10"></main>`,
+      ],
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          written: ["compositions/hud.html"],
+          block: { name: "hud", title: "HUD", type: "hyperframes:block", files: [], duration: 4 },
+        }),
+      }),
+    );
+
+    await addBlockToProject({
+      projectId: "project",
+      blockName: "hud",
+      activeCompPath: targetPath,
+      placement: { start: 8, duration: 4, track: 1 },
+      timelineElements: [],
+      readProjectFile: async (path) => files.get(path) ?? "",
+      writeProjectFile: vi.fn(async (path: string, content: string) => {
+        files.set(path, content);
+      }),
+      recordEdit: vi.fn().mockResolvedValue(undefined),
+      refreshFileTree: vi.fn().mockResolvedValue(undefined),
+      reloadPreview: vi.fn(),
+      showToast: vi.fn(),
+    });
+
+    expect(files.get(targetPath)).toContain(
+      'data-composition-id="scene" data-duration="12" data-hf-derived-duration="12"',
+    );
+  });
 });

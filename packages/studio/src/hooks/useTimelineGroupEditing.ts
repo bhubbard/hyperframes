@@ -9,24 +9,24 @@ import {
   type PublishSdkSession,
 } from "../utils/sdkCutover";
 import {
-  buildTimelineMoveTimingPatch,
-  buildTimelineResizeTimingPatch,
   extendRootDurationIfNeeded,
   formatTimelineAttributeNumber,
   patchIframeDomTiming,
+  patchTimelineMoveTiming,
+  patchTimelineResizeTiming,
   playbackStartAttributeForElement,
   persistTimelineBatchEdit,
   type PersistTimelineBatchChange,
   type RecordEditInput,
 } from "./timelineEditingHelpers";
 import {
-  captureDurationRollback,
   finishGroupTimingGsapFallback,
   readFileContent,
   scaleGsapPositions,
   shiftGsapPositions,
-  syncPreviewContentDuration,
 } from "./timelineTimingSync";
+import { captureDurationRollback, syncPreviewContentDuration } from "./timelineLengthSync";
+import { captureLiveLength, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -157,6 +157,7 @@ export function useTimelineGroupEditing({
       projectId: string,
       label: string,
       batchChanges: PersistTimelineBatchChange[],
+      animationEnd: number,
       coalesceKey: string,
       coalesceMs?: number,
     ) => {
@@ -170,6 +171,7 @@ export function useTimelineGroupEditing({
         pendingTimelineEditPathRef,
         coalesceKey,
         coalesceMs,
+        animationEnd,
       });
       forceReloadSdkSession?.();
     },
@@ -241,6 +243,7 @@ export function useTimelineGroupEditing({
   const handleTimelineGroupMove = useCallback(
     (changes: TimelineGroupMoveChange[], options?: TimelineGroupCommitOptions) => {
       if (changes.length === 0) return Promise.resolve();
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       for (const change of changes) {
         const attrs: Array<[string, string]> = [
           ["data-start", formatTimelineAttributeNumber(change.start)],
@@ -276,9 +279,8 @@ export function useTimelineGroupEditing({
       // readout sync below are provable no-ops there — kept unconditional so the
       // duration machinery stays on one code path.
       const needsExtension = extendRootDurationIfNeeded(maxEnd);
-      // Optimistic duration readout: content-driven (grow AND shrink), read from
-      // the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
+      const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? moveCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;
       const label = options?.label ?? "Move timeline clips";
@@ -300,7 +302,7 @@ export function useTimelineGroupEditing({
             changes.map((change) => ({
               element: change.element,
               buildPatches: (original, target) =>
-                buildTimelineMoveTimingPatch(
+                patchTimelineMoveTiming(
                   original,
                   target,
                   change.start,
@@ -308,6 +310,7 @@ export function useTimelineGroupEditing({
                   change.track,
                 ),
             })),
+            animationEnd,
             coalesceKey,
             coalesceMs,
           );
@@ -338,6 +341,7 @@ export function useTimelineGroupEditing({
               if (delta === 0 || !domId) return null;
               return shiftGsapPositions(projectId, changePath, domId, delta);
             },
+            lengthSync: { lengthAfterEdit, activeCompPath, writeProjectFile },
           });
         } finally {
           invalidateGsapCache?.();
@@ -364,12 +368,14 @@ export function useTimelineGroupEditing({
       trySdkBatchPersist,
       showToast,
       invalidateGsapCache,
+      writeProjectFile,
     ],
   );
 
   const handleTimelineGroupResize = useCallback(
     (changes: TimelineGroupResizeChange[], options?: TimelineGroupCommitOptions) => {
       if (changes.length === 0) return Promise.resolve();
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       for (const change of changes) {
         const liveAttrs: Array<[string, string]> = [
           ["data-start", formatTimelineAttributeNumber(change.start)],
@@ -389,9 +395,8 @@ export function useTimelineGroupEditing({
       // needsExtension gates the SDK path (setTiming can't grow the root duration),
       // so read the store BEFORE the readout sync below optimistically updates it.
       const needsExtension = extendRootDurationIfNeeded(maxEnd);
-      // Optimistic duration readout: content-driven (grow AND shrink), read from
-      // the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
+      const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? resizeCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;
       return enqueueGroupOperation("Resize timeline clips", async (projectId) => {
@@ -415,12 +420,13 @@ export function useTimelineGroupEditing({
             changes.map((change) => ({
               element: change.element,
               buildPatches: (original, target) =>
-                buildTimelineResizeTimingPatch(original, target, change.element, {
+                patchTimelineResizeTiming(original, target, change.element, {
                   start: change.start,
                   duration: change.duration,
                   playbackStart: change.playbackStart,
                 }),
             })),
+            animationEnd,
             coalesceKey,
             coalesceMs,
           );
@@ -455,6 +461,7 @@ export function useTimelineGroupEditing({
                 change.duration,
               );
             },
+            lengthSync: { lengthAfterEdit, activeCompPath, writeProjectFile },
           });
         } finally {
           invalidateGsapCache?.();
@@ -477,6 +484,7 @@ export function useTimelineGroupEditing({
       trySdkBatchPersist,
       showToast,
       invalidateGsapCache,
+      writeProjectFile,
     ],
   );
 

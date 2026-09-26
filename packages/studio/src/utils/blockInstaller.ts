@@ -2,6 +2,7 @@ import { buildProjectApiPath } from "./projectRouting";
 import type { RegistryItem } from "@hyperframes/core/registry";
 import type { TimelineElement } from "../player";
 import {
+  extendRootDurationInSource,
   insertTimelineAssetIntoSource,
   resolveTimelineAssetCompositionSize,
 } from "./timelineAssetDrop";
@@ -9,7 +10,6 @@ import { collectHtmlIds } from "./studioHelpers";
 import { generateId } from "./generateId";
 import { formatTimelineAttributeNumber } from "../player/components/timelineEditing";
 import { saveProjectFilesWithHistory } from "./studioFileHistory";
-import { extendRootDurationInSource } from "./rootDuration";
 import { deriveTimelineStoreKeyForDomId } from "../player/lib/timelineElementHelpers";
 
 function getMaxZIndexFromIframe(iframe: HTMLIFrameElement | null): number {
@@ -226,6 +226,7 @@ export async function addBlockToProject(
       zIndex: getMaxZIndexFromIframe(opts.previewIframe ?? null) + 1,
     });
     const patchedContent = extendRootDurationInSource(
+      originalContent,
       insertTimelineAssetIntoSource(originalContent, subComposition),
       start + duration,
     );

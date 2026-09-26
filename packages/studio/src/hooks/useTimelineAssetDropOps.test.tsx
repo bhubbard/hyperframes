@@ -61,44 +61,36 @@ function renderDropHook(
   });
 }
 
+async function dropWritten(source: string, start: number, duration: number): Promise<string> {
+  const writeProjectFile = vi.fn().mockResolvedValue(undefined);
+  const getDrop = renderDropHook(source, writeProjectFile);
+  await act(async () => {
+    await getDrop()("clip.mp4", { start, track: 0 }, duration);
+  });
+  return (writeProjectFile.mock.calls[0] as [string, string])[1];
+}
+
 describe("useTimelineAssetDropOps handleTimelineAssetDrop", () => {
+  const scene = (root: string) =>
+    `<main data-composition-id="scene" ${root} data-width="1920" data-height="1080"></main>`;
+
   it("grows the root duration when the drop lands past the current end", async () => {
-    const source =
-      '<main data-composition-id="scene" data-duration="10" data-width="1920" data-height="1080"></main>';
-    const writeProjectFile = vi.fn().mockResolvedValue(undefined);
-    const getDrop = renderDropHook(source, writeProjectFile);
+    expect(await dropWritten(scene(`data-duration="10"`), 8, 5)).toContain('data-duration="13"');
+  });
 
-    await act(async () => {
-      await getDrop()("clip.mp4", { start: 8, track: 0 }, 5);
-    });
-
-    const [, written] = writeProjectFile.mock.calls[0] as [string, string];
-    expect(written).toContain('data-duration="13"');
+  it("keeps a derived length's marker in step when the drop grows it", async () => {
+    const source = scene(`data-duration="10" data-hf-derived-duration="10"`);
+    expect(await dropWritten(source, 8, 5)).toContain(
+      'data-duration="13" data-hf-derived-duration="13"',
+    );
   });
 
   it("leaves the root duration alone when the drop lands inside the current end", async () => {
-    const source =
-      '<main data-composition-id="scene" data-duration="10" data-width="1920" data-height="1080"></main>';
-    const writeProjectFile = vi.fn().mockResolvedValue(undefined);
-    const getDrop = renderDropHook(source, writeProjectFile);
-
-    await act(async () => {
-      await getDrop()("clip.mp4", { start: 1, track: 0 }, 2);
-    });
-
-    const [, written] = writeProjectFile.mock.calls[0] as [string, string];
-    expect(written).toContain('data-duration="10"');
+    expect(await dropWritten(scene(`data-duration="10"`), 1, 2)).toContain('data-duration="10"');
   });
 
   it("selects and reveals the newly dropped clip", async () => {
-    const source =
-      '<main data-composition-id="scene" data-duration="10" data-width="1920" data-height="1080"></main>';
-    const writeProjectFile = vi.fn().mockResolvedValue(undefined);
-    const getDrop = renderDropHook(source, writeProjectFile);
-
-    await act(async () => {
-      await getDrop()("clip.mp4", { start: 1, track: 0 }, 2);
-    });
+    await dropWritten(scene(`data-duration="10"`), 1, 2);
 
     expect(usePlayerStore.getState().selectedElementId).toBe("index.html#clip");
   });

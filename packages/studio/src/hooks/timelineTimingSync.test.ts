@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePlayerStore } from "../player/store/playerStore";
 import { jsonResponse, requestUrl } from "./fetchStubTestUtils";
 import type { TimelineElement } from "../player/store/playerStore";
+import { captureDurationRollback } from "./timelineLengthSync";
 import {
-  captureDurationRollback,
   finishClipTimingFallback,
   finishGroupTimingGsapFallback,
   readFileContent,
@@ -816,5 +816,69 @@ describe("foldGsapMutationIntoHistory — owned GSAP transaction", () => {
       conflict: false,
     });
     expect(contents.get("index.html")).toBe("ORIGINAL");
+  });
+});
+
+describe("the length is re-decided once the preview converged", () => {
+  const AFTER = `<div data-composition-id="main" data-duration="5" data-hf-derived-duration="5"><div id="clip" data-start="1" data-duration="2"></div></div>`;
+
+  async function finishWithLengthSync(scriptText: string | null, targetPath = "index.html") {
+    stubFetch(["<before>", "<before>", AFTER], {
+      mutated: true,
+      scriptText,
+      before: "<before>",
+      after: AFTER,
+    });
+    const { iframe, contentWindow } = buildLivePreviewIframe();
+    Object.assign(contentWindow, { __hf: { animationEnd: () => 3 } });
+    const lengthAfterEdit = vi.fn(() => ({ length: 3, marker: 3 }));
+    const writeProjectFile = vi.fn(async () => {});
+    const recordEdit = vi.fn(async (_edit: unknown) => {});
+    const reloadPreview = vi.fn();
+    await finishClipTimingFallback({
+      ...clipFallbackInput({ reloadPreview, recordEdit }),
+      iframe,
+      targetPath,
+      coalesceKey: "timeline-move:hf-clip",
+      lengthSync: { lengthAfterEdit, activeCompPath: "index.html", writeProjectFile },
+    });
+    return { lengthAfterEdit, writeProjectFile, recordEdit, reloadPreview };
+  }
+
+  it("after a soft reload, writes the length from the converged animation end in the same undo step", async () => {
+    const { lengthAfterEdit, writeProjectFile, recordEdit, reloadPreview } =
+      await finishWithLengthSync('window.__timelines["root"] = tl2;');
+
+    const written = AFTER.replace(
+      `data-duration="5" data-hf-derived-duration="5"`,
+      `data-duration="3" data-hf-derived-duration="3"`,
+    );
+    expect(reloadPreview).not.toHaveBeenCalled();
+    expect(lengthAfterEdit).toHaveBeenCalledWith({ clips: 3, animation: 3 });
+    expect(writeProjectFile).toHaveBeenCalledWith("index.html", written, AFTER);
+    expect(recordEdit).toHaveBeenCalledTimes(2);
+    expect(recordEdit).toHaveBeenLastCalledWith({
+      label: "Move timeline clip",
+      coalesceKey: "timeline-move:hf-clip",
+      coalesceMs: 10_000,
+      files: { "index.html": { before: AFTER, after: written } },
+    });
+    expect(usePlayerStore.getState().duration).toBe(3);
+  });
+
+  it("skips after a full reload, which has no convergence point", async () => {
+    const { lengthAfterEdit, writeProjectFile, reloadPreview } = await finishWithLengthSync(null);
+    expect(reloadPreview).toHaveBeenCalledTimes(1);
+    expect(lengthAfterEdit).not.toHaveBeenCalled();
+    expect(writeProjectFile).not.toHaveBeenCalled();
+  });
+
+  it("skips a file the preview is not showing", async () => {
+    const { lengthAfterEdit, writeProjectFile } = await finishWithLengthSync(
+      'window.__timelines["root"] = tl2;',
+      "sub.html",
+    );
+    expect(lengthAfterEdit).not.toHaveBeenCalled();
+    expect(writeProjectFile).not.toHaveBeenCalled();
   });
 });

@@ -15,12 +15,9 @@ import {
   buildTimelineMoveTimingPatch,
   buildTimelineResizeTimingPatch,
 } from "./timelineEditingHelpers";
-import {
-  captureDurationRollback,
-  finishClipTimingFallback,
-  readFileContent,
-  syncPreviewContentDuration,
-} from "./timelineTimingSync";
+import { finishClipTimingFallback, readFileContent } from "./timelineTimingSync";
+import { captureDurationRollback, syncPreviewContentDuration } from "./timelineLengthSync";
+import { animationEndFor, captureLiveLength } from "./timelineEditingGsap";
 import type { PersistTimelineEditInput } from "./timelineEditingHelpers";
 import { useSetAudioGroupAttribute } from "./timelineAudioGroupVolume";
 import { useSetElementAttribute } from "./timelineElementFxAttribute";
@@ -186,6 +183,7 @@ export function useTimelineEditing({
         // other move — early-returning on !startChanged alone silently dropped
         // the file write, so the lane snapped back on reload.
         const trackChanged = updates.track !== element.track;
+        const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
 
         if (startChanged || trackChanged) {
           const liveAttrs: Array<[string, string]> = [];
@@ -214,8 +212,8 @@ export function useTimelineEditing({
         const rollbackDuration = captureDurationRollback(previewIframeRef.current);
         // needsExtension gates the SDK path (setTiming can't grow the root duration), so read the store BEFORE the readout sync below optimistically updates it.
         const needsExtension = extendRootDurationIfNeeded(updates.start + element.duration);
-        // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
-        syncPreviewContentDuration(previewIframeRef.current);
+        syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
+        const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
 
         const buildMovePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
           // Persist lane changes too — data-start-only writes let reload snap the lane back.
@@ -226,6 +224,7 @@ export function useTimelineEditing({
             updates.start,
             element.duration,
             track,
+            animationEnd,
           );
         };
         const coalesceKey = `timeline-move:${element.hfId ?? element.id}`;
@@ -243,6 +242,7 @@ export function useTimelineEditing({
             coalesceKey,
             recordEdit,
             edit: { kind: "shift", delta: updates.start - element.start },
+            lengthSync: { lengthAfterEdit, activeCompPath, writeProjectFile },
           }).finally(() => invalidateGsapCache?.());
         const moveFallback = () =>
           enqueueEdit(element, "Move timeline clip", buildMovePatches, coalesceKey).then(
@@ -315,17 +315,18 @@ export function useTimelineEditing({
         const liveAttr = playbackStartAttributeForElement(element);
         liveAttrs.push([liveAttr, formatTimelineAttributeNumber(updates.playbackStart)]);
       }
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       patchIframeDomTiming(previewIframeRef.current, element, liveAttrs, activeCompPath);
       // Snapshot the duration BEFORE the optimistic updates below so a failed
       // persist can roll the readout + live root back (see captureDurationRollback).
       const rollbackDuration = captureDurationRollback(previewIframeRef.current);
       // needsExtension gates the SDK path (setTiming can't grow the root duration), so read the store BEFORE the readout sync below optimistically updates it.
       const needsExtension = extendRootDurationIfNeeded(updates.start + updates.duration);
-      // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
       const targetPath = element.sourceFile || activeCompPath || "index.html";
+      const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
       const buildResizePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
-        return buildTimelineResizeTimingPatch(original, target, element, updates);
+        return buildTimelineResizeTimingPatch(original, target, element, updates, animationEnd);
       };
       const hasPbsAdjustment =
         updates.playbackStart != null ||
@@ -350,6 +351,7 @@ export function useTimelineEditing({
             from: { start: element.start, duration: element.duration },
             to: { start: updates.start, duration: updates.duration },
           },
+          lengthSync: { lengthAfterEdit, activeCompPath, writeProjectFile },
         }).finally(() => invalidateGsapCache?.());
       const resizeFallback = () =>
         enqueueEdit(element, "Resize timeline clip", buildResizePatches, coalesceKey).then(

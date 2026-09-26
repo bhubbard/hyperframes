@@ -8,6 +8,7 @@ import type { TimelineDropPlacement } from "../player/components/timelineCallbac
 import { resolveDropTrack } from "../utils/timelineDropTrackInsert";
 import {
   buildTimelineAssetId,
+  extendRootDurationInSource,
   buildTimelineAssetInsertHtml,
   buildTimelineFileDropPlacements,
   fitTimelineAssetGeometry,
@@ -26,7 +27,6 @@ import {
 import { formatTimelineAttributeNumber } from "./timelineEditingHelpers";
 import { readFileContent } from "./timelineTimingSync";
 import { commitTimelineCompositionInsertion } from "../utils/timelineCompositionInsert";
-import { extendRootDurationInSource } from "../utils/rootDuration";
 import { deriveTimelineStoreKeyForDomId } from "../player/lib/timelineElementHelpers";
 import { selectAndRevealTimelineElement } from "../player/components/timelineDropReveal";
 
@@ -142,6 +142,7 @@ export function useTimelineAssetDropOps({
           },
         });
         const patchedContent = extendRootDurationInSource(
+          originalContent,
           insertTimelineAssetIntoSource(
             sourceWithRoom,
             buildTimelineAssetInsertHtml({

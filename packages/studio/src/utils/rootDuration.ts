@@ -1,5 +1,3 @@
-import { formatTimelineAttributeNumber } from "../player/components/timelineEditing";
-
 /**
  * Matches the opening tag of the ROOT composition element — the first tag that
  * carries a `data-composition-id` attribute, regardless of where the attribute
@@ -15,6 +13,13 @@ const ROOT_COMPOSITION_OPEN_TAG_RE = /<[^>]*\bdata-composition-id(?=[\s=/>])[^>]
  * `\s*` around `=` tolerates author whitespace.
  */
 const DATA_DURATION_ATTR_RE = /(\bdata-duration\s*=\s*)(["'])[^"']*\2/i;
+
+/** Written beside a derived `data-duration`; a length that no longer matches it was set by hand. */
+export const DERIVED_DURATION_ATTR = "data-hf-derived-duration";
+const DERIVED_DURATION_ATTR_RE = new RegExp(
+  `(\\b${DERIVED_DURATION_ATTR}\\s*=\\s*)(["'])[^"']*\\2`,
+  "i",
+);
 
 /**
  * Read the ROOT composition's raw `data-duration`.
@@ -33,12 +38,34 @@ const DATA_DURATION_ATTR_RE = /(\bdata-duration\s*=\s*)(["'])[^"']*\2/i;
  * Deterministic and render-safe: DOMParser is the only DOM global used.
  */
 export function readRootCompositionDuration(source: string): number | null {
-  const root = new DOMParser()
-    .parseFromString(source, "text/html")
-    .querySelector("[data-composition-id]");
-  const raw = root?.getAttribute("data-duration");
-  if (raw == null) return null;
-  return Number.parseFloat(raw);
+  return readDocumentRootDuration(new DOMParser().parseFromString(source, "text/html"));
+}
+
+/** The root's length and marker as authored; either may be missing. */
+export interface StoredRootLength {
+  length: number | null;
+  marker: number | null;
+}
+
+/** The root's length after an edit; a null `marker` is a hand-set length left as it is. */
+export interface RootLength {
+  length: number;
+  marker: number | null;
+}
+
+function readDocumentRootDuration(
+  doc: Document | null | undefined,
+  attribute = "data-duration",
+): number | null {
+  const raw = doc?.querySelector("[data-composition-id]")?.getAttribute(attribute);
+  return raw == null ? null : Number.parseFloat(raw);
+}
+
+export function readRootLength(doc: Document | null | undefined): StoredRootLength {
+  return {
+    length: readDocumentRootDuration(doc),
+    marker: readDocumentRootDuration(doc, DERIVED_DURATION_ATTR),
+  };
 }
 
 /**
@@ -56,25 +83,35 @@ export function readRootCompositionDuration(source: string): number | null {
  * root tag has no `data-duration` attribute to replace.
  */
 export function patchRootCompositionDuration(source: string, newValue: string): string {
+  return patchRootTag(source, (tag) => setAttributeValue(tag, DATA_DURATION_ATTR_RE, newValue));
+}
+
+/** Write the derived-length marker, inserting it after the root's `data-duration`. */
+export function patchRootDerivedDuration(source: string, value: string): string {
+  return patchRootTag(source, (tag) =>
+    DERIVED_DURATION_ATTR_RE.test(tag)
+      ? setAttributeValue(tag, DERIVED_DURATION_ATTR_RE, value)
+      : tag.replace(
+          DATA_DURATION_ATTR_RE,
+          (full, _prefix, quote: string) =>
+            `${full} ${DERIVED_DURATION_ATTR}=${quote}${value}${quote}`,
+        ),
+  );
+}
+
+function setAttributeValue(tag: string, attribute: RegExp, value: string): string {
+  return tag.replace(
+    attribute,
+    (_full, prefix: string, quote: string) => `${prefix}${quote}${value}${quote}`,
+  );
+}
+
+function patchRootTag(source: string, patch: (tag: string) => string): string {
   const rootTag = ROOT_COMPOSITION_OPEN_TAG_RE.exec(source);
   if (!rootTag) return source;
-  const patchedTag = rootTag[0].replace(
-    DATA_DURATION_ATTR_RE,
-    (_full, prefix: string, quote: string) => `${prefix}${quote}${newValue}${quote}`,
-  );
+  const patchedTag = patch(rootTag[0]);
   if (patchedTag === rootTag[0]) return source;
   return (
     source.slice(0, rootTag.index) + patchedTag + source.slice(rootTag.index + rootTag[0].length)
   );
-}
-
-/**
- * Grow-only ratchet: extend the root composition's `data-duration` to `newEnd`
- * when `newEnd` is larger than the current root duration. No-op otherwise (and
- * when there is no root duration to compare against).
- */
-export function extendRootDurationInSource(source: string, newEnd: number): string {
-  const current = readRootCompositionDuration(source);
-  if (current == null || !(newEnd > current)) return source;
-  return patchRootCompositionDuration(source, formatTimelineAttributeNumber(newEnd));
 }
