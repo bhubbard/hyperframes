@@ -327,7 +327,8 @@ export function syncRuntimeMedia(params: {
       params.timeSeconds >= clip.end &&
       isClipVisibleAt(params.timeSeconds, clip.start, clip.end, params.getCompositionDuration());
     let relTime =
-      sourceTimeAt(clipRate, Math.min(params.timeSeconds, clip.end) - clip.start) + clip.mediaStart;
+      sourceTimeAt(clipRate, Math.max(0, Math.min(params.timeSeconds, clip.end) - clip.start)) +
+      clip.mediaStart;
     const isHeldVideoTail =
       isTerminalVideo ||
       (isNonLoopVideo && clip.sourceDuration != null && relTime >= clip.sourceDuration && inWindow);

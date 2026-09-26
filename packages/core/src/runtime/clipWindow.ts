@@ -1,6 +1,10 @@
-/** Half-open: two back-to-back clips never both hold the shared boundary instant. */
+import { sameInstant } from "../clipFacts";
+
+const hasStarted = (time: number, start: number) => time >= start || sameInstant(time, start);
+
+/** Half-open: two back-to-back clips never both hold the shared boundary instant, float sums included. */
 export const isInClipWindow = (time: number, start: number, end: number): boolean =>
-  time >= start && time < end;
+  hasStarted(time, start) && time < end && !sameInstant(time, end);
 
 const TERMINAL_EPSILON_SECONDS = 1e-6;
 
@@ -15,6 +19,6 @@ export const isClipVisibleAt = (
   compositionDuration: number,
 ): boolean =>
   isInClipWindow(time, start, end) ||
-  (time >= start &&
+  (hasStarted(time, start) &&
     compositionDuration > 0 &&
     end >= compositionDuration - TERMINAL_EPSILON_SECONDS);

@@ -34,6 +34,20 @@ const roundTo3 = (n: number) => Math.round(n * 1000) / 1000;
 
 const num = (n: number) => String(roundTo3(n));
 
+export const instantTolerance = (time: number) => 4 * Number.EPSILON * Math.max(1, Math.abs(time));
+
+/** Float sums like 19.8 + 6.4 miss 26.2 by a rounding step; a few steps, scaled to the time, are one instant. */
+export function sameInstant(a: number, b: number): boolean {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return a === b;
+  return Math.abs(a - b) <= instantTolerance(Math.max(Math.abs(a), Math.abs(b)));
+}
+
+const isBefore = (a: number, b: number) => a < b && !sameInstant(a, b);
+
+export function spansOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return isBefore(aStart, bEnd) && isBefore(bStart, aEnd);
+}
+
 export function formatClipLine(clip: ClipFact): string {
   const parts = [
     `${clip.kind} "${clip.id}"`,

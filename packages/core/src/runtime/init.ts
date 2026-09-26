@@ -1,5 +1,6 @@
 // fallow-ignore-file code-duplication complexity
 import { installRuntimeControlBridge, postRuntimeMessage, setRuntimeProtocolFps } from "./bridge";
+import { instantTolerance } from "../clipFacts";
 import { isInClipWindow } from "./clipWindow";
 import { revealTimedClipsAfterFirstPass } from "./timedClipHide";
 import { initRuntimeAnalytics, emitAnalyticsEvent } from "./analytics";
@@ -2686,8 +2687,10 @@ export function initSandboxRuntimeModular(): void {
   ): Array<HTMLVideoElement | HTMLAudioElement> => {
     const fromSeconds = lastSyncedMediaTimeSeconds;
     if (fromSeconds === null) return index.clips.map((clip) => clip.el);
-    const lo = Math.min(fromSeconds, toSeconds);
-    const hi = Math.max(fromSeconds, toSeconds);
+    const sameInstantMargin =
+      2 * instantTolerance(Math.max(Math.abs(fromSeconds), Math.abs(toSeconds)));
+    const lo = Math.min(fromSeconds, toSeconds) - sameInstantMargin;
+    const hi = Math.max(fromSeconds, toSeconds) + sameInstantMargin;
     const visiting = new Set<HTMLVideoElement | HTMLAudioElement>();
     for (const clip of mediaClipsInWindow) visiting.add(clip.el);
     for (const clip of clipsWithEndpointBetween(index.byStart, (c) => c.start, lo, hi)) {

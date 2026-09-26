@@ -376,6 +376,14 @@ describe("syncRuntimeMedia", () => {
     document.body.innerHTML = "";
   });
 
+  it("seeks a clip whose start is a float sum to its first frame, never before it", () => {
+    const clip = createMockClip({ start: 19.8 + 0.1, end: 25 });
+    Object.defineProperty(clip.el, "readyState", { value: 4, writable: true });
+    clip.el.currentTime = 3;
+    syncRuntimeMedia({ clips: [clip], timeSeconds: 19.9, playing: false, playbackRate: 1 });
+    expect(clip.el.currentTime).toBe(0);
+  });
+
   describe("speed ramp", () => {
     it("seeks to the integrated source time and plays at the instantaneous rate", () => {
       const rate = {

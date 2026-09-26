@@ -6,6 +6,7 @@ import {
 } from "@hyperframes/studio-server";
 import type { AppliedFileMutation, PatchOperation } from "@hyperframes/studio-server";
 import { fpsToNumber, parseFpsWithDefault } from "@hyperframes/core";
+import { spansOverlap } from "@hyperframes/core/clip-facts";
 import { readCompositionFps } from "../utils/compositionFps.js";
 import { readFileSync } from "node:fs";
 import type { ProjectTimeline, TimelineRow } from "./describeProject.js";
@@ -147,7 +148,7 @@ function overlap(
       candidate !== row &&
       candidate.file === row.file &&
       candidate.trackIndex === row.trackIndex &&
-      Math.max(start, candidate.start) < Math.min(end, candidate.end),
+      spansOverlap(start, end, candidate.start, candidate.end),
   );
 }
 
@@ -263,7 +264,8 @@ function finishTrim(
 ): MutationDecision | { ok: true; nextStart: number; nextDuration: number } {
   if (end && !end.ok) return end;
   if (duration && !duration.ok) return duration;
-  const nextDuration = duration?.seconds ?? (end ? end.seconds - nextStart : context.row.duration);
+  const nextDuration =
+    duration?.seconds ?? (end ? durationUntil(nextStart, end.seconds) : context.row.duration);
   if (nextDuration <= 0) {
     return {
       ok: false,
@@ -277,6 +279,19 @@ function finishTrim(
 function trimStart(context: MutationContext, expression: string | undefined) {
   if (!expression) return { ok: true as const, seconds: context.row.start };
   return parseMutationTime(context, expression, "pass a valid time expression");
+}
+
+function durationUntil(start: number, end: number): number {
+  let duration = end - start;
+  while (duration > 0 && start + duration > end) duration = nextSmaller(duration);
+  return duration;
+}
+
+const float = new DataView(new ArrayBuffer(8));
+function nextSmaller(positive: number): number {
+  float.setFloat64(0, positive);
+  float.setBigUint64(0, float.getBigUint64(0) - 1n);
+  return float.getFloat64(0);
 }
 
 function trimEnd(context: MutationContext, expression: string | undefined) {
@@ -413,8 +428,7 @@ export function mutationConflict(
       (candidate) =>
         candidate.file === row.file &&
         candidate.trackIndex === row.trackIndex &&
-        candidate.start < nextStart &&
-        nextStart < candidate.end,
+        spansOverlap(nextStart, nextStart, candidate.start, candidate.end),
     );
     if (!conflict) return null;
     return {
