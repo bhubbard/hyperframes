@@ -25,7 +25,7 @@ import {
 } from "../helpers/fileVersion.js";
 import { affectsProjectSignature, listProjectFiles } from "../helpers/projectSignature.js";
 import { openBlobStore, type BlobStore } from "./blobStore.js";
-import { ID_PATH, projectHistoryId } from "./historyId.js";
+import { ID_PATH, projectHistoryId, readId, recordProject } from "./historyId.js";
 import { takeHistoryOwnership } from "./ownerLock.js";
 import {
   START,
@@ -43,6 +43,7 @@ import {
   type HistoryFileChange,
   type HistoryLog,
   type HistoryWho,
+  type LogRecord,
   type Manifest,
 } from "./historyLog.js";
 
@@ -149,6 +150,8 @@ export interface ProjectHistory {
   onEntry(listener: (entry: HistoryEntry) => void): () => void;
   /** Takes in every pending write and commits every open window and the outside group. */
   flush(): Promise<void>;
+  /** True once another project stands at the folder's path: open that one's history instead. */
+  replacedAtPath(): boolean;
   close(): Promise<void>;
 }
 
@@ -255,6 +258,7 @@ function addChange(group: Group, path: string, before: string | null, after: str
 class Engine {
   readonly dir: string;
   readonly foldsCase: boolean;
+  readonly folder: { dev: number; ino: number };
   readonly home: string;
   log: HistoryLog = { baseline: new Map(), entries: [], pins: new Set() };
   tracked = new Map<string, Tracked>();
@@ -268,6 +272,8 @@ class Engine {
   notedTimer: NodeJS.Timeout | null = null;
   listeners = new Set<(entry: HistoryEntry) => void>();
   tail: Promise<unknown> = Promise.resolve();
+  closed = false;
+  closing: Promise<void> | undefined;
 
   constructor(
     readonly options: ProjectHistoryOptions,
@@ -277,6 +283,9 @@ class Engine {
     this.dir = resolve(options.projectDir);
     this.home = join(options.historyRoot, projectId);
     this.foldsCase = ignoresCase(this.dir);
+    const folder = statSync(this.dir, { throwIfNoEntry: false });
+    if (!folder || readId(this.dir) !== projectId) throw this.replaced();
+    this.folder = { dev: folder.dev, ino: folder.ino };
   }
 
   /** A path as the project's disk compares names: folded where `A` and `a` are one name. */
@@ -294,9 +303,41 @@ class Engine {
 
   /** One operation at a time, in order: sweeps, windows and undos never interleave. */
   queue<T>(task: () => Promise<T>): Promise<T> {
+    if (this.closed)
+      return Promise.reject(new HistoryClosedError("This project's history is closed."));
     const run = this.tail.then(task);
     this.tail = run.catch(() => undefined);
     return run;
+  }
+
+  /** Another project if the folder or its id changed, or the id is gone: a recreated folder may reuse the inode. */
+  whereFolder(): "here" | "gone" | "replaced" {
+    const now = statSync(this.dir, { throwIfNoEntry: false });
+    if (!now) return "gone";
+    const same = now.dev === this.folder.dev && now.ino === this.folder.ino;
+    return same && readId(this.dir) === this.projectId ? "here" : "replaced";
+  }
+
+  assertWritable(): void {
+    const folder = this.whereFolder();
+    if (folder === "gone") throw new Error(`The project folder is gone: ${this.dir}`);
+    if (folder === "replaced") throw this.replaced();
+  }
+
+  persistLog(record?: LogRecord): void {
+    if (record) saveRecord(this.logFile, this.log, record);
+    else writeLog(this.logFile, this.log);
+    if (!existsSync(join(this.home, "project.json")))
+      recordProject(this.home, this.dir, this.folder.ino);
+  }
+
+  replaced(): HistoryClosedError {
+    return new HistoryClosedError(`${this.dir} is now another project.`);
+  }
+
+  assertOpen(): void {
+    if (this.closed) throw new HistoryClosedError("This project's history is closed.");
+    if (this.whereFolder() === "replaced") throw this.replaced();
   }
 
   async start(): Promise<void> {
@@ -333,7 +374,7 @@ class Engine {
         stat: statKey(file, sweptAt),
       });
     this.log.baseline = this.manifest();
-    writeLog(this.logFile, this.log);
+    this.persistLog();
     this.saveStatCache();
   }
 
@@ -361,8 +402,8 @@ class Engine {
    * project (a stat per file, a hash only when the stat moved); per-path sweeps if projects reach tens of thousands.
    */
   async sweep(): Promise<void> {
-    // A missing project folder was moved or removed, not emptied: that is no change to its files.
-    if (!existsSync(this.dir)) return;
+    // A folder moved or removed was not emptied, and another project at its path is none of this history's.
+    if (this.whereFolder() !== "here") return;
     const sweptAt = Date.now();
     const changedAt = (file: { mtimeMs: number; ctimeMs: number }) =>
       Math.min(sweptAt, Math.max(file.mtimeMs, file.ctimeMs));
@@ -414,7 +455,7 @@ class Engine {
     const known = this.tracked.get(path) ?? { hash: null, stat: null };
     if (stat && known.stat === stat) return false;
     const hash = await this.storeIfPresent(path);
-    if (hash === null) return false;
+    if (hash === null || this.whereFolder() !== "here") return false;
     this.tracked.set(path, { hash, stat });
     if (known.hash !== hash) await this.record(path, known.hash, hash, at);
     return known.hash !== hash || known.stat !== stat;
@@ -630,7 +671,7 @@ class Engine {
     const entry: HistoryEntry = { ...pending, endedAt, ...extra };
     this.log.entries.push(entry);
     try {
-      saveRecord(this.logFile, this.log, { type: "entry", entry });
+      this.persistLog({ type: "entry", entry });
     } catch (error) {
       this.log.entries.pop();
       throw error;
@@ -657,7 +698,7 @@ class Engine {
         new Set([...referencedHashes(this.log, this.manifest()), ...this.pendingHashes()]),
       );
     }
-    if (folded) writeLog(this.logFile, this.log);
+    if (folded) this.persistLog();
   }
 
   /** Hashes only pending changes point at yet, such as a claim's stored cut. */
@@ -688,7 +729,9 @@ class Engine {
   }
 
   background(task: () => Promise<unknown>): void {
-    this.queue(task).catch((error) => this.options.onError?.(error));
+    this.queue(task).catch((error) => {
+      if (!(error instanceof HistoryClosedError)) this.options.onError?.(error);
+    });
   }
 
   beginWindow(who: HistoryWho, label: string, idleMs: number): Promise<HistoryWindow> {
@@ -770,6 +813,7 @@ class Engine {
     target: Map<string, string | null>,
     extra: Partial<HistoryEntry>,
   ): Promise<HistoryEntry | null> {
+    this.assertWritable();
     const changes = [...target]
       .filter(([path, hash]) => (this.tracked.get(path)?.hash ?? null) !== hash)
       .sort(([, a], [, b]) => Number(a !== null) - Number(b !== null));
@@ -792,6 +836,7 @@ class Engine {
 
   /** Writes one project file (null deletes it), first leaving the running operation's receipt for its echo. */
   async writeProjectFile(path: string, hash: string | null): Promise<void> {
+    this.assertWritable();
     const absPath = join(this.dir, path);
     const { writeToken } = this;
     if (writeToken) {
@@ -905,8 +950,11 @@ class Engine {
         this.beginWindow(who, label, options.idleMs ?? this.options.maxGroupMs ?? 30_000),
       claim: (who, label, paths, options = {}) =>
         this.queue(() => this.claimNow(who, label, paths, options)),
-      noteChange: (path) => this.noteChange(path),
+      noteChange: (path) => {
+        if (!this.closed) this.noteChange(path);
+      },
       list: () => {
+        this.assertOpen();
         const undone = undoneIds(this.log.entries);
         return this.log.entries.map((entry) => ({
           ...entry,
@@ -926,6 +974,7 @@ class Engine {
           this.restoreNow(point, who, `Restored: ${this.pointLabel(point)}`),
         ),
       peek: (point) => {
+        this.assertOpen();
         const files = manifestAt(this.log, point);
         return files && Object.fromEntries(files);
       },
@@ -947,23 +996,34 @@ class Engine {
             throw error;
           }
         }),
-      next: (direction, who) => this.next(direction, who),
-      readBlob: (hash) => this.blobs.read(hash),
+      next: (direction, who) => {
+        this.assertOpen();
+        return this.next(direction, who);
+      },
+      readBlob: async (hash) => {
+        this.assertOpen();
+        return this.blobs.read(hash);
+      },
       pin: (id, pinned) => {
+        this.assertOpen();
         this.entry(id);
         if (pinned) this.log.pins.add(id);
         else this.log.pins.delete(id);
-        saveRecord(this.logFile, this.log, { type: "pin", id, pinned });
+        this.persistLog({ type: "pin", id, pinned });
       },
       onEntry: (listener) => {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
       },
       flush: () => this.queue(() => this.settleAll()),
-      close: async () => {
-        if (this.notedTimer) clearTimeout(this.notedTimer);
-        await this.queue(() => this.settleAll());
-      },
+      replacedAtPath: () => this.whereFolder() === "replaced",
+      close: () =>
+        (this.closing ??= (async () => {
+          if (this.notedTimer) clearTimeout(this.notedTimer);
+          const settled = this.queue(() => this.settleAll());
+          this.closed = true;
+          await settled;
+        })()),
     };
   }
 }
@@ -981,8 +1041,18 @@ function missingIsEmpty(error: NodeJS.ErrnoException): string[] {
   throw error;
 }
 
+/** A call on a history that was closed, or whose folder is now another project. */
+export class HistoryClosedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HistoryClosedError";
+  }
+}
+
 /** Opens a project's history: every write to its files becomes an entry that can be undone or restored. */
 export async function openProjectHistory(options: ProjectHistoryOptions): Promise<ProjectHistory> {
+  if (!existsSync(options.projectDir))
+    throw new HistoryClosedError(`${options.projectDir} is gone or now another project.`);
   const projectId = projectHistoryId(options.projectDir, options.historyRoot);
   const release = await takeHistoryOwnership(
     join(options.historyRoot, projectId),
